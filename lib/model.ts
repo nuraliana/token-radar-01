@@ -107,6 +107,7 @@ export interface BoardRow {
   gecko_id: string | null;
   symbol: string | null;
   token_status: 'pre-token';
+  signal: MomentumSignal;
   age_days: number | null;
   implied_value_usd: number;
   model: {
@@ -132,6 +133,7 @@ export interface RadarRow {
   mcap_usd: number | null;
   listed_at: string | null;
   age_days: number | null;
+  signal: MomentumSignal;
   implied_value_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
@@ -207,6 +209,17 @@ export function impliedValue(
   const base = protocol.tvl_usd * model.base_multiple;
   const implied = Math.max(1, Math.round(base * growthMult * maturityMult * breadthMult));
   return { implied, growthPct, growthMult, maturityMult, breadthMult, age };
+}
+
+/** How hot a protocol's last week runs: the dashboard's signal badge, from the seven-day change alone. */
+export type MomentumSignal = 'heating' | 'warming' | 'steady' | 'cooling';
+
+export function signalFor(change7d: number | null): MomentumSignal {
+  const g = change7d ?? 0;
+  if (g >= 25) return 'heating';
+  if (g >= 5) return 'warming';
+  if (g <= -10) return 'cooling';
+  return 'steady';
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -290,6 +303,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     gecko_id: s.p.gecko_id,
     symbol: s.p.symbol,
     token_status: 'pre-token',
+    signal: signalFor(s.p.change_7d),
     age_days: s.age,
     implied_value_usd: s.implied,
     model: {
@@ -409,8 +423,24 @@ function weeklyFor(p: SnapshotProtocol, capital: number, chain: string): string 
   return `Each week, make one small deposit, swap or vote on ${name}.`;
 }
 
+/** The category's exit: how to unwind the position, repaying any borrow first. */
+function exitFor(p: SnapshotProtocol, chain: string): string {
+  const c = (p.category ?? '').toLowerCase();
+  const name = p.name;
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) {
+    return `Repay any borrow on ${name} first, then withdraw the supplied collateral from ${chain} in one transaction and keep the receipt.`;
+  }
+  if (c.includes('perpetual') || c.includes('derivative') || c.includes('options')) {
+    return `Close any open position on ${name} first, then withdraw the margin from ${chain} in one transaction and keep the receipt.`;
+  }
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm')) {
+    return `Remove the liquidity from ${name}'s main pool on ${chain} in one transaction and keep the receipt, so the exit is as traceable as the entry.`;
+  }
+  return `Withdraw the position back through ${name} on ${chain} in one transaction and keep the receipt, so the exit is as traceable as the entry.`;
+}
+
 /**
- * A protocol's farm plan: six steps, each an action with a cost and a time.
+ * A protocol's farm plan: seven steps, each an action with a cost and a time.
  * The plan is derived from the protocol's own record (category, chains, TVL,
  * age), never from a hand-written list of names.
  */
@@ -438,6 +468,11 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
       cost: `the $${capital} stays in the position`,
       time: `${hold} days`,
+    },
+    {
+      text: exitFor(p, chain),
+      cost: 'about $2 of gas to exit',
+      time: '10 minutes to unwind',
     },
     {
       text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.`,
@@ -482,6 +517,7 @@ export function radarRow(row: BoardRow): RadarRow {
     mcap_usd: row.mcap_usd,
     listed_at: row.listed_at,
     age_days: row.age_days,
+    signal: row.signal,
     implied_value_usd: row.implied_value_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
