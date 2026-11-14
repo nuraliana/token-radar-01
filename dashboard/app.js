@@ -8,7 +8,7 @@
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  var state = { q: '', category: 'all', chain: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null, top10: false };
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
@@ -31,6 +31,19 @@
   // snapshot figures and checks the number board.json carries, so the page's
   // code and the board's data are visibly the same arithmetic. Growth is
   // concave (square root): an extreme week counts, but mostly as noise.
+  function signalFor(change7d) {
+    var g = change7d === null || change7d === undefined ? 0 : change7d;
+    if (g >= 25) return 'heating';
+    if (g >= 5) return 'warming';
+    if (g <= -10) return 'cooling';
+    return 'steady';
+  }
+  function signalLabel(signal) {
+    if (signal === 'heating') return 'Heating';
+    if (signal === 'warming') return 'Warming';
+    if (signal === 'cooling') return 'Cooling';
+    return 'Steady';
+  }
   function impliedOf(row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + model.growth_weight * Math.sign(growth) * Math.sqrt(Math.abs(growth) / 100);
@@ -108,6 +121,14 @@
     if (c.indexOf('insurance') >= 0) return 'Each week, renew or top up $10 of cover on ' + name + '.';
     return 'Each week, make one small deposit, swap or vote on ' + name + '.';
   }
+  function exitFor(p, chain) {
+    var c = (p.category || '').toLowerCase();
+    var name = p.name;
+    if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return 'Repay any borrow on ' + name + ' first, then withdraw the supplied collateral from ' + chain + ' in one transaction and keep the receipt.';
+    if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0 || c.indexOf('options') >= 0) return 'Close any open position on ' + name + ' first, then withdraw the margin from ' + chain + ' in one transaction and keep the receipt.';
+    if (c.indexOf('dex') >= 0 || c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0) return 'Remove the liquidity from ' + name + '\'s main pool on ' + chain + ' in one transaction and keep the receipt, so the exit is as traceable as the entry.';
+    return 'Withdraw the position back through ' + name + ' on ' + chain + ' in one transaction and keep the receipt, so the exit is as traceable as the entry.';
+  }
   function stepText(step) {
     var s = step.text + ' Cost: ' + step.cost + '. Time: ' + step.time + '.';
     if (s.length > 600) s = s.slice(0, 596) + '...';
@@ -123,6 +144,7 @@
       { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
       { text: weeklyFor(p, capital, chain), cost: 'about $2 of gas a week', time: '10 minutes a week' },
       { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
+      { text: exitFor(p, chain), cost: 'about $2 of gas to exit', time: '10 minutes to unwind' },
       { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
       { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
     ].map(stepText);
@@ -153,6 +175,7 @@
   function rows() {
     var q = state.q.trim().toLowerCase();
     return DATA.rows.filter(function (r) {
+      if (state.top10 && r.rank > 10) return false;
       if (state.category !== 'all' && r.category !== state.category) return false;
       if (state.chain !== 'all' && !(r.chains || []).some(function (c) { return c === state.chain; })) return false;
       if (!q) return true;
@@ -219,10 +242,12 @@
     chainSel.addEventListener('change', function () { state.chain = chainSel.value; writeHash(); render(); });
     var pre = el('button', { type: 'button', 'aria-pressed': state.tab === 'pre-token' ? 'true' : 'false', text: 'Pre-token', onclick: function () { state.tab = 'pre-token'; render(); } });
     var live = el('button', { type: 'button', 'aria-pressed': state.tab === 'live' ? 'true' : 'false', text: 'Live token', onclick: function () { state.tab = 'live'; render(); } });
+    var top10 = el('button', { type: 'button', class: 'toggle', 'aria-pressed': state.top10 ? 'true' : 'false', text: 'Top 10', onclick: function () { state.top10 = !state.top10; render(); } });
     return el('div', { class: 'controls' },
       el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
       el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), select),
       el('div', { class: 'field' }, el('label', { for: 'chain', text: 'Chain' }), chainSel),
+      el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Scope' }), top10),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
       el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
     );
@@ -251,6 +276,7 @@
     list.forEach(function (r) {
       var growth = r.change_7d === null ? 'n/a' : fmtPct(r.change_7d);
       var growthClass = r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg';
+      var sig = signalFor(r.change_7d);
       var tr = el('tr', {
         'data-selected': state.selected === r.slug ? 'true' : 'false',
         tabindex: '0',
@@ -260,7 +286,8 @@
         el('td', { class: 'num', text: String(r.rank) }),
         el('td', null, el('div', { class: 'name' },
           el('b', { text: r.name }),
-          el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') })
+          el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') }),
+          el('span', { class: 'signal ' + sig, text: signalLabel(sig) })
         )),
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + growthClass, text: growth }),
@@ -357,6 +384,7 @@
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Chains' }), el('b', { class: 'num', text: String((row.chains || []).length) })),
+        el('div', null, el('span', { text: 'Momentum signal' }), el('b', { class: 'num', text: signalLabel(row.signal || signalFor(row.change_7d)) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
         el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
         el('div', null, el('span', { text: 'Breadth multiplier' }), el('b', { class: 'num', text: String(row.breadth_multiplier) })),
