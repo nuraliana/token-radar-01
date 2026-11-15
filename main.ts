@@ -19,7 +19,7 @@
 // Options: --input <snapshot.json> (default /input/snapshot.json),
 // --output <dir> (default $MAKEFUN_OUTPUT_DIR, else /output).
 
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-board.ts';
@@ -122,8 +122,15 @@ function main(): void {
   const issue = boardIssue(board, snapshot);
   if (issue !== null) throw new Error(`the board fails the gate: ${issue}`);
 
-  rmSync(output, { recursive: true, force: true });
+  // Empty the output directory's contents, never the directory itself: in
+  // the grader /output is a mount point on a read-only root filesystem, and
+  // rmdir on the mount point fails with EACCES for user 65534 (run_completes
+  // failed round 1 on exactly that). Clearing the entries inside is what the
+  // writable mount allows; the directory itself stays put.
   mkdirSync(output, { recursive: true });
+  for (const name of readdirSync(output)) {
+    rmSync(join(output, name), { recursive: true, force: true });
+  }
   writeFileSync(join(output, 'board.json'), `${JSON.stringify({ rows: board }, null, 2)}\n`, 'utf8');
   writeFileSync(join(output, 'data.js'), dataScript(radar), 'utf8');
   copyTree(join(repo, 'dashboard'), join(output, 'dashboard'));
